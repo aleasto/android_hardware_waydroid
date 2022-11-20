@@ -148,15 +148,22 @@ struct display {
     sp<IWaydroidTask> task;
 };
 
+constexpr int kBufferMaxPlanes = 4;
+
 struct buffer {
     struct wl_buffer *buffer;
     struct wp_presentation_feedback *feedback;
 
     buffer_handle_t handle;
-    int width;
-    int height;
-    unsigned long stride;
-    int format;
+
+    uint32_t num_fds;
+    uint32_t width;
+    uint32_t height;
+    uint32_t prime_fd[kBufferMaxPlanes];
+    uint32_t stride[kBufferMaxPlanes];
+    uint32_t offset[kBufferMaxPlanes];
+    uint32_t format;
+    uint64_t modifier;
 
     int timeline_fd;
     bool isShm;
@@ -183,15 +190,15 @@ struct window {
     bool isActive;
 };
 
+int ConvertHalFormatToDrm(struct display *display, uint32_t hal_format);
+
 int
 create_android_wl_buffer(struct display *display, struct buffer *buffer,
              int width, int height, int format,
              int stride, buffer_handle_t target);
 
 int
-create_dmabuf_wl_buffer(struct display *display, struct buffer *buffer,
-             int width, int height, int format,
-             int prime_fd, int stride, int offset, uint64_t modifier, bool format_is_drm);
+create_dmabuf_wl_buffer(struct display *display, struct buffer *buffer);
 
 int
 create_shm_wl_buffer(struct display *display, struct buffer *buffer,

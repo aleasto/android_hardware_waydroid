@@ -129,11 +129,11 @@ static void update_shm_buffer(struct display *display, struct buffer *buffer)
     android::Rect bounds(buffer->width, buffer->height);
     if (android::GraphicBufferMapper::get().lock(buffer->handle, GRALLOC_USAGE_SW_READ_OFTEN, bounds, &data) == 0) {
         if (display->gtype == GRALLOC_GBM) {
-            stride = buffer->stride / 4;
-            src_stride = buffer->stride / 4;
+            stride = buffer->stride[0] / 4;
+            src_stride = buffer->stride[0] / 4;
         } else {
-            stride = buffer->stride;
-            src_stride = buffer->stride;
+            stride = buffer->stride[0];
+            src_stride = buffer->stride[0];
         }
         for (int i = 0; i < buffer->height; i++) {
             uint32_t* source = (uint32_t*)data + (i * src_stride);
@@ -148,6 +148,65 @@ static void update_shm_buffer(struct display *display, struct buffer *buffer)
             }
         }
         android::GraphicBufferMapper::get().unlock(buffer->handle);
+    }
+}
+
+static bool is_yuv(int hal_format) {
+    return hal_format == HAL_PIXEL_FORMAT_YV12 ||
+           hal_format == HAL_PIXEL_FORMAT_YCbCr_420_888 ||
+           hal_format == HAL_PIXEL_FORMAT_IMPLEMENTATION_DEFINED;
+}
+
+static int drm_gralloc_get_buffer_info(struct display *display, struct gralloc_handle_t *handle, struct buffer *out) {
+    int drm_format = ConvertHalFormatToDrm(display, handle->format);
+    if (drm_format < 0 || handle->prime_fd <= 0)
+        return -EINVAL;
+
+    out->width = handle->width;
+    out->height = handle->height;
+    out->format = drm_format;
+    out->modifier = handle->modifier;
+    out->prime_fd[0] = handle->prime_fd;
+
+    if (is_yuv(handle->format)) {
+        out->num_fds = 3;
+
+        struct android_ycbcr ycbcr {};
+        memset(&ycbcr, 0, sizeof(ycbcr));
+        int ret = android::GraphicBufferMapper::get().lockYCbCr((buffer_handle_t)handle, 0, {0, 0, 0, 0}, &ycbcr);
+        if (ret) {
+            ALOGW("lock_ycbcr failed: %d", ret);
+            return ret;
+        }
+        android::GraphicBufferMapper::get().unlock((buffer_handle_t)handle);
+
+        out->offset[0] = (size_t)ycbcr.y;
+        out->offset[1] = (size_t)ycbcr.cr;
+        out->offset[2] = (size_t)ycbcr.cb;
+
+        out->stride[0] = ycbcr.ystride;
+        out->stride[1] = out->stride[2] = ycbcr.cstride;
+
+        out->prime_fd[1] = out->prime_fd[2] = out->prime_fd[0];
+    } else {
+        out->num_fds = 1;
+        out->offset[0] = 0;
+        out->stride[0] = handle->stride;
+    }
+
+    return 0;
+}
+
+static void cros_gralloc_get_buffer_info(const struct cros_gralloc_handle *handle, struct buffer *out) {
+    out->num_fds = handle->num_planes;
+    out->width = handle->width;
+    out->height = handle->height;
+    out->format = handle->format;
+    out->modifier = handle->format_modifier;
+    for (int i = 0; i < handle->num_planes && i < kBufferMaxPlanes; i++) {
+        out->prime_fd[i] = handle->fds[i];
+        out->stride[i] = handle->strides[i];
+        out->offset[i] = handle->offsets[i];
     }
 }
 
@@ -180,7 +239,9 @@ static struct buffer *get_wl_buffer(struct waydroid_hwc_composer_device_1 *pdev,
     if (pdev->display->gtype == GRALLOC_GBM) {
         struct gralloc_handle_t *drm_handle = (struct gralloc_handle_t *)layer->handle;
         if (pdev->display->dmabuf) {
-            ret = create_dmabuf_wl_buffer(pdev->display, buf, drm_handle->width, drm_handle->height, drm_handle->format, drm_handle->prime_fd, drm_handle->stride, 0 /* offset */, drm_handle->modifier, false /* format_is_drm */);
+            ret = drm_gralloc_get_buffer_info(pdev->display, drm_handle, buf);
+            if (!ret)
+                ret = create_dmabuf_wl_buffer(pdev->display, buf);
         } else {
             ret = create_shm_wl_buffer(pdev->display, buf, drm_handle->width, drm_handle->height, drm_handle->format, drm_handle->stride, layer->handle);
             update_shm_buffer(pdev->display, buf);
@@ -188,7 +249,8 @@ static struct buffer *get_wl_buffer(struct waydroid_hwc_composer_device_1 *pdev,
     } else if (pdev->display->gtype == GRALLOC_CROS) {
         const struct cros_gralloc_handle *cros_handle = (const struct cros_gralloc_handle *)layer->handle;
         if (pdev->display->dmabuf) {
-            ret = create_dmabuf_wl_buffer(pdev->display, buf, cros_handle->width, cros_handle->height, cros_handle->format, cros_handle->fds[0], cros_handle->strides[0], cros_handle->offsets[0], cros_handle->format_modifier, true /* format_is_drm */);
+            cros_gralloc_get_buffer_info(cros_handle, buf);
+            ret = create_dmabuf_wl_buffer(pdev->display, buf);
         } else {
             ret = create_shm_wl_buffer(pdev->display, buf, cros_handle->width, cros_handle->height, cros_handle->droid_format, cros_handle->strides[0], layer->handle);
             update_shm_buffer(pdev->display, buf);
