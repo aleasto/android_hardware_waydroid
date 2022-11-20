@@ -65,6 +65,7 @@
 #include "presentation-time-client-protocol.h"
 #include "xdg-shell-client-protocol.h"
 #include "tablet-unstable-v2-client-protocol.h"
+#include "xdg-decoration-unstable-v1-client-protocol.h"
 
 using ::android::hardware::hidl_string;
 
@@ -294,14 +295,14 @@ static void choose_width_height(struct display* display, int32_t hint_width, int
     int height = hint_height;
 
     // Ignore hint it requested
-    if (property_get("persist.waydroid.width", property, nullptr) > 0) {
+    if (!display->isWinResSet && property_get("persist.waydroid.width", property, nullptr) > 0) {
         display->isMaximized = false;
         width = atoi(property);
     } else if (display->scale > 1) {
         width *= display->scale;
     }
 
-    if (property_get("persist.waydroid.height", property, nullptr) > 0) {
+    if (!display->isWinResSet && property_get("persist.waydroid.height", property, nullptr) > 0) {
         display->isMaximized = false;
         height = atoi(property);
     } else if (display->scale > 1) {
@@ -318,17 +319,31 @@ xdg_toplevel_handle_configure(void *data, struct xdg_toplevel *,
                               struct wl_array *)
 {
     struct window *window = (struct window *)data;
+    struct display *display = (struct display*)window->display;
 
     if (width == 0 || height == 0) {
 		/* Compositor is deferring to us */
 		return;
 	}
 
-    if (! window->display->isWinResSet) {
-        choose_width_height(window->display, width, height);
+    choose_width_height(display, width, height);
+
+    ALOGE("aleasto: display size %dx%d", display->width / display->scale, display->height / display->scale);
+
+    if (!display->isWinResSet) {
         window->display->isWinResSet = true;
         if (window->display->waiting_for_data)
-            pthread_cond_broadcast(&window->display->data_available_cond);
+            pthread_cond_broadcast(&display->data_available_cond);
+    } else {
+        if (window->bg_viewport)
+            wp_viewport_set_destination(window->bg_viewport, display->width / display->scale, display->height / display->scale);
+        // if (window->xdg_surface)
+        //     xdg_surface_set_window_geometry(window->xdg_surface, 0, 0, display->width / display->scale, display->height / display->scale);
+
+        struct wl_region *region = wl_compositor_create_region(display->compositor);
+        wl_region_add(region, 0, 0, display->width / display->scale, display->height / display->scale);
+        wl_surface_set_opaque_region(window->surface, region);
+        wl_region_destroy(region);
     }
 }
 
@@ -464,6 +479,13 @@ create_window(struct display *display, bool with_dummy, std::string appID, std::
         xdg_toplevel_add_listener(window->xdg_toplevel, &xdg_toplevel_listener, window);
         if (display->isMaximized || !display->isWinResSet)
             xdg_toplevel_set_maximized(window->xdg_toplevel);
+
+        if (display->isWinResSet && display->decoration_manager) {
+            struct zxdg_toplevel_decoration_v1 * decoration =
+                zxdg_decoration_manager_v1_get_toplevel_decoration(display->decoration_manager, window->xdg_toplevel);
+            zxdg_toplevel_decoration_v1_set_mode(decoration, ZXDG_TOPLEVEL_DECORATION_V1_MODE_SERVER_SIDE);
+        }
+
         const hidl_string appID_hidl(appID);
         hidl_string appName_hidl(appID);
         if (appID != "Waydroid" && display->task)
@@ -543,8 +565,8 @@ create_window(struct display *display, bool with_dummy, std::string appID, std::
         wp_viewport_set_destination(window->bg_viewport, display->width / display->scale, display->height / display->scale);
     }
 
-    if (display->wm_base)
-        xdg_surface_set_window_geometry(window->xdg_surface, 0, 0, display->width / display->scale, display->height / display->scale);
+    // if (display->wm_base)
+    //     xdg_surface_set_window_geometry(window->xdg_surface, 0, 0, display->width / display->scale, display->height / display->scale);
 
     struct wl_region *region = wl_compositor_create_region(display->compositor);
     if (color.a == 0) {
@@ -1637,6 +1659,9 @@ registry_handle_global(void *data, struct wl_registry *registry,
                 &zwp_tablet_manager_v2_interface, 1);
         if (d->tablet_manager && d->seat)
             add_tablet_seat(d);
+    } else if (strcmp(interface, "zxdg_decoration_manager_v1") == 0) {
+        d->decoration_manager = (struct zxdg_decoration_manager_v1 *)wl_registry_bind(registry, id,
+                &zxdg_decoration_manager_v1_interface, 1);
     }
 }
 
