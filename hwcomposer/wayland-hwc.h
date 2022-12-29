@@ -182,6 +182,7 @@ struct window {
     std::string appID;
     std::string taskID;
     bool isActive;
+    bool isCalibrating;
 };
 
 int

@@ -26,6 +26,7 @@ cc_library_shared {
         "libhidlbase",
         "libhidltransport",
         "libhwbinder",
+        "libbinder",
         "libsync",
         "libui",
         "libdrm",
@@ -43,6 +44,7 @@ cc_library_shared {
         "hwcomposer.cpp",
         "wayland-hwc.cpp",
         "WaydroidWindow.cpp",
+        "vendor/waydroid/IAppMonitor.aidl"
     ],
     header_libs: [
         "libsystem_headers",
