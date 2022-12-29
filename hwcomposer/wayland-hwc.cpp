@@ -66,7 +66,14 @@
 #include "xdg-shell-client-protocol.h"
 #include "tablet-unstable-v2-client-protocol.h"
 
+#include <binder/IInterface.h>
+#include <binder/IServiceManager.h>
+#include <vendor/waydroid/IAppMonitor.h>
+using ::vendor::waydroid::IAppMonitor;
+
 using ::android::hardware::hidl_string;
+
+using namespace android;
 
 struct buffer;
 
@@ -427,7 +434,18 @@ destroy_window(struct window *window, bool keep)
 
         wl_surface_destroy(window->surface);
         wl_display_flush(window->display->display);
+
+        if (!window->isCalibrating) {
+            sp<IServiceManager> sm = defaultServiceManager();
+            String16 name("waydroidappmonitor");
+            if (sm->checkService(name)) {
+                sp<IAppMonitor> appmonitor = interface_cast<IAppMonitor>(sm->getService(name));
+                if (appmonitor)
+                    appmonitor->close(String16(window->appID.c_str()));
+            }
+        }
     }
+
     if (keep)
         window->isActive = false;
     else
@@ -451,8 +469,7 @@ create_window(struct display *display, bool with_dummy, std::string appID, std::
     window->bg_buffer = NULL;
     window->bg_surface = NULL;
     window->bg_subsurface = NULL;
-
-    bool calibrating = !display->isWinResSet;
+    window->isCalibrating = !display->isWinResSet;
 
     if (display->wm_base) {
         window->xdg_surface =
@@ -509,8 +526,16 @@ create_window(struct display *display, bool with_dummy, std::string appID, std::
         assert(0);
     }
 
-    if (calibrating)
+    if (window->isCalibrating)
         return window;
+
+    sp<IServiceManager> sm = defaultServiceManager();
+    String16 name("waydroidappmonitor");
+    if (sm->checkService(name)) {
+        sp<IAppMonitor> appmonitor = interface_cast<IAppMonitor>(sm->getService(name));
+        if (appmonitor)
+            appmonitor->open(String16(window->appID.c_str()));
+    }
 
     // No subsurface background for us!
     if (!with_dummy && !display->subcompositor)
