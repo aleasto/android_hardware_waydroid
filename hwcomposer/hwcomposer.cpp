@@ -263,7 +263,11 @@ static struct wl_surface *get_surface(struct waydroid_hwc_composer_device_1 *pde
     struct wl_subsurface *subsurface = NULL;
     struct wp_viewport *viewport = NULL;
 
-    if (window->surfaces.find(window->lastLayer) == window->surfaces.end()) {
+    if (pdev->display->multi_windows_v2 && window->surfaces.size() == 0) {
+        // The first surface is not a subsurface
+        window->surfaces[window->lastLayer] = window->surface;
+        window->viewports[window->lastLayer] = wp_viewporter_get_viewport(pdev->display->viewporter, window->surface);
+    } else if (window->surfaces.find(window->lastLayer) == window->surfaces.end()) {
         surface = wl_compositor_create_surface(pdev->display->compositor);
         subsurface = wl_subcompositor_get_subsurface(pdev->display->subcompositor,
                                                      surface,
@@ -296,9 +300,12 @@ static struct wl_surface *get_surface(struct waydroid_hwc_composer_device_1 *pde
         setup_viewport_destination(window->viewports[window->lastLayer], layer->displayFrame, pdev->display);
     }
 
-    wl_subsurface_set_position(window->subsurfaces[window->lastLayer],
-                               floor(layer->displayFrame.left / pdev->display->scale),
-                               floor(layer->displayFrame.top / pdev->display->scale));
+    subsurface = window->subsurfaces[window->lastLayer];
+    if (subsurface) {
+        wl_subsurface_set_position(subsurface,
+                                   floor(layer->displayFrame.left / pdev->display->scale) - window->x,
+                                   floor(layer->displayFrame.top / pdev->display->scale) - window->y);
+    }
 
     pdev->display->layers[window->surfaces[window->lastLayer]] = {
         .x = layer->displayFrame.left,
@@ -702,7 +709,13 @@ static int hwc_set(struct hwc_composer_device_1* dev,size_t numDisplays,
 
                 if (showWindow) {
                     if (pdev->windows.find(layer_tid) == pdev->windows.end()) {
-                        pdev->windows[layer_tid] = create_window(pdev->display, pdev->use_subsurface, layer_aid, layer_tid, {0, 0, 0, 0});
+                        struct window *w = create_window(pdev->display, pdev->use_subsurface, layer_aid, layer_tid, {0, 0, 0, 0});
+                        if (pdev->display->multi_windows_v2) {
+                            w->x = floor(fb_layer->displayFrame.left / pdev->display->scale);
+                            w->y = floor(fb_layer->displayFrame.top / pdev->display->scale);
+                        }
+                        pdev->windows[layer_tid] = w;
+                        ALOGE("aleasto: window x=%d y=%d", w->x, w->y);
                         std::string windows_size_str = std::to_string(pdev->windows.size());
                         property_set("waydroid.open_windows", windows_size_str.c_str());
                     }

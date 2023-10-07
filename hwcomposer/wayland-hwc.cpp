@@ -470,8 +470,10 @@ destroy_window(struct window *window, bool keep)
         for (auto it = window->surfaces.begin(); it != window->surfaces.end(); it++) {
             if (window->viewports[it->first])
                 wp_viewport_destroy(window->viewports[it->first]);
-            wl_subsurface_destroy(window->subsurfaces[it->first]);
-            wl_surface_destroy(it->second);
+            if (window->subsurfaces[it->first]) {
+                wl_subsurface_destroy(window->subsurfaces[it->first]);
+                wl_surface_destroy(it->second);
+            }
         }
         if (window->xdg_toplevel)
             xdg_toplevel_destroy(window->xdg_toplevel);
@@ -547,7 +549,7 @@ create_window(struct display *display, bool use_subsurfaces, std::string appID, 
         window->xdg_toplevel = xdg_surface_get_toplevel(window->xdg_surface);
         assert(window->xdg_toplevel);
         xdg_toplevel_add_listener(window->xdg_toplevel, &xdg_toplevel_listener, window);
-        if (display->isMaximized || !display->height || !display->width)
+        if ((display->isMaximized && !display->multi_windows_v2) || calibrating)
             xdg_toplevel_set_maximized(window->xdg_toplevel);
         const hidl_string appID_hidl(appID);
         hidl_string appName_hidl(appID);
@@ -606,7 +608,7 @@ create_window(struct display *display, bool use_subsurfaces, std::string appID, 
     }
 
     // No subsurface background for us!
-    if (!use_subsurfaces && !display->subcompositor)
+    if ((!use_subsurfaces && !display->subcompositor) || display->multi_windows_v2)
         return window;
 
     int fd = syscall(SYS_memfd_create, "buffer", 0);
@@ -749,6 +751,7 @@ keyboard_handle_enter(void *data, struct wl_keyboard *,
         return;
 
     struct window *window = display->windows[surface];
+    display->focused_window = window;
 
     if (window->display->task != nullptr) {
         if (window->taskID != "none" && window->taskID != "0") {
@@ -762,6 +765,7 @@ keyboard_handle_leave(void *data, struct wl_keyboard *,
                       uint32_t, struct wl_surface *)
 {
     struct display *display = (struct display *)data;
+    display->focused_window = NULL;
     for (size_t i = 0; i < display->keysDown.size(); i++) {
         if (display->keysDown[i] == WL_KEYBOARD_KEY_STATE_PRESSED) {
             send_key_event(display, i, WL_KEYBOARD_KEY_STATE_RELEASED);
@@ -837,6 +841,18 @@ pointer_handle_motion(void *data, struct wl_pointer *,
 
     if (!display->pointer_surface)
         return;
+
+    if (display->multi_windows_v2) {
+        if (!display->focused_window)
+            return;
+
+        std::scoped_lock lock(display->windowsMutex);
+        if (!std::any_of(display->focused_window->surfaces.begin(), display->focused_window->surfaces.end(), [display](const auto& pair){
+                    return pair.second == display->pointer_surface;
+                })) {
+            return;
+        }
+    }
 
     if (clock_gettime(CLOCK_MONOTONIC, &rt) == -1) {
         ALOGE("%s:%d error in touch clock_gettime: %s",
@@ -1901,6 +1917,8 @@ create_display(const char *gralloc)
     display->gtype = get_gralloc_type(gralloc);
     display->refresh = 0;
     display->isMaximized = true;
+    display->multi_windows_v2 = property_get_bool("persist.waydroid.multi_windows", false) &&
+                                property_get_bool("persist.waydroid.multi_windows_v2", false);
     display->display = wl_display_connect(NULL);
     assert(display->display);
     sem_init(&display->egl_go, 0, 0);

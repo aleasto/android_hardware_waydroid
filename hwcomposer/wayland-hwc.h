@@ -162,8 +162,10 @@ struct display {
     struct handleExt target_layer_handle_ext;
     std::map<buffer_handle_t, struct buffer *> buffer_map;
     std::array<uint8_t, 239> keysDown;
+    struct window *focused_window;
 
     bool isMaximized;
+    bool multi_windows_v2;
     sp<IWaydroidTask> task;
 };
 
@@ -206,6 +208,8 @@ struct window {
     std::string appID;
     std::string taskID;
     bool isActive;
+    int x;
+    int y;
 };
 
 void
